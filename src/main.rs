@@ -1,4 +1,4 @@
-use tracing::{info, log::LevelFilter};
+use tracing::{error, info, log::LevelFilter};
 
 fn main() {
     env_logger::builder()
@@ -14,5 +14,13 @@ fn main() {
         app_info.name, app_info.version
     );
 
-    let vkcore = vk::init(app_info).expect("Failed to initialize Vulkan core.");
+    let vkcore = {
+        match vk::init(app_info) {
+            Ok(core) => core,
+            Err(e) => {
+                error!("Failed to initialize Vulkan Core: {e}");
+                return;
+            }
+        }
+    };
 }

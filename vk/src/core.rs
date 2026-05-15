@@ -5,7 +5,8 @@ use ash::vk;
 
 pub struct VkCore {
     pub instance: ManuallyDrop<Instance>,
-    // pub device: Device,
+    pub device: ManuallyDrop<Device>,
+    pub queues: Queues,
 }
 
 pub struct Instance {
@@ -15,14 +16,36 @@ pub struct Instance {
     pub debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
 }
 
+pub struct DeviceInfo {
+    pub name: String,
+    pub dev: vk::PhysicalDevice,
+    pub exts: Vec<String>,
+    pub features: vk::PhysicalDeviceFeatures,
+    pub props: vk::PhysicalDeviceProperties,
+}
+
 pub struct Device {
-    pub physical: vk::PhysicalDevice,
+    pub physical: DeviceInfo,
     pub logical: ash::Device,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Queue {
+    pub family: u32,
+    pub queue: vk::Queue,
+}
+
+pub struct Queues {
+    pub graphics: Queue,
+    pub present: Queue,
+    pub compute: Queue,
+    pub transfer: Queue,
 }
 
 impl Drop for VkCore {
     fn drop(&mut self) {
         unsafe {
+            ManuallyDrop::drop(&mut self.device);
             ManuallyDrop::drop(&mut self.instance);
         }
         debug!("Vulkan Core dropped.");

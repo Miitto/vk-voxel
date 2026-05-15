@@ -1,21 +1,18 @@
 use crate::core::Instance;
-use ash::ext::debug_report;
-use ash::vk;
-use std::sync::OnceLock;
 use std::{ffi::CStr, mem::ManuallyDrop};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstanceCreationError {
-    #[error("Failed to load Vulkan entry.")]
+    #[error("Failed to load Vulkan entry")]
     EntryLoadError,
-    #[error("Failed to enumerate Vulkan instance extensions.")]
+    #[error("Failed to enumerate Vulkan instance extensions")]
     FailedToEnumerateExtensions,
-    #[error("Missing required Vulkan extensions: {0:?}.")]
+    #[error("Missing required Vulkan extensions: {0:?}")]
     MissingExtensions(Vec<String>),
-    #[error("Failed to create Vulkan instance.")]
+    #[error("Failed to create Vulkan instance")]
     CreationFailed,
-    #[error("Failed to create Vulkan debug messenger.")]
+    #[error("Failed to create Vulkan debug messenger")]
     FailedToCreateDebugMessenger,
 }
 
@@ -54,11 +51,12 @@ fn required_instance_extensions() -> Vec<&'static CStr> {
     required_surface_extensions()
 }
 
-pub fn createInstance(info: AppInfo) -> Result<Instance, InstanceCreationError> {
+pub fn create_instance(info: AppInfo) -> Result<Instance, InstanceCreationError> {
     use ash::vk;
 
     let entry = unsafe { ash::Entry::load() }.map_err(|_| InstanceCreationError::EntryLoadError)?;
 
+    debug!("");
     debug!("Available Vulkan instance extensions:");
     let available_extensions: Vec<String> =
         unsafe { entry.enumerate_instance_extension_properties(None) }
