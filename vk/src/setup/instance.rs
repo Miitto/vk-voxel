@@ -1,0 +1,162 @@
+use crate::core::Instance;
+use ash::ext::debug_report;
+use ash::vk;
+use std::sync::OnceLock;
+use std::{ffi::CStr, mem::ManuallyDrop};
+use tracing::{debug, error, trace, warn};
+
+#[derive(Debug, thiserror::Error)]
+pub enum InstanceCreationError {
+    #[error("Failed to load Vulkan entry.")]
+    EntryLoadError,
+    #[error("Failed to enumerate Vulkan instance extensions.")]
+    FailedToEnumerateExtensions,
+    #[error("Missing required Vulkan extensions: {0:?}.")]
+    MissingExtensions(Vec<String>),
+    #[error("Failed to create Vulkan instance.")]
+    CreationFailed,
+    #[error("Failed to create Vulkan debug messenger.")]
+    FailedToCreateDebugMessenger,
+}
+
+pub struct AppInfo {
+    pub name: &'static str,
+    pub version: u32,
+}
+
+#[cfg(debug_assertions)]
+fn enabled_validation_layers() -> [&'static CStr; 1] {
+    [c"VK_LAYER_KHRONOS_validation"]
+}
+
+#[cfg(not(debug_assertions))]
+const fn enabled_validation_layers() -> [&'static CStr; 0] {
+    vec![]
+}
+
+#[cfg(target_os = "windows")]
+fn required_surface_extensions() -> [&'static CStr; 2] {
+    [ash::khr::surface::NAME, ash::khr::win32_surface::NAME]
+}
+
+#[cfg(not(target_os = "windows"))]
+compile_error!("Unsupported platform: Vulkan surface extensions not defined for this OS.");
+
+#[cfg(debug_assertions)]
+fn required_instance_extensions() -> Vec<&'static CStr> {
+    let mut extensions = required_surface_extensions().to_vec();
+    extensions.push(ash::ext::debug_utils::NAME);
+    extensions
+}
+
+#[cfg(not(debug_assertions))]
+fn required_instance_extensions() -> Vec<&'static CStr> {
+    required_surface_extensions()
+}
+
+pub fn createInstance(info: AppInfo) -> Result<Instance, InstanceCreationError> {
+    use ash::vk;
+
+    let entry = unsafe { ash::Entry::load() }.map_err(|_| InstanceCreationError::EntryLoadError)?;
+
+    debug!("Available Vulkan instance extensions:");
+    let available_extensions: Vec<String> =
+        unsafe { entry.enumerate_instance_extension_properties(None) }
+            .map_err(|_| InstanceCreationError::FailedToEnumerateExtensions)?
+            .iter()
+            .filter_map(|ext| ext.extension_name_as_c_str().ok())
+            .map(|c| {
+                let string = c.to_string_lossy().to_string();
+                debug!("- {}", string);
+                string
+            })
+            .collect();
+
+    let app_info = vk::ApplicationInfo {
+        api_version: vk::make_api_version(0, 1, 4, 0),
+        application_version: info.version,
+        p_application_name: info.name.as_ptr() as *const i8,
+        ..Default::default()
+    };
+
+    let layers = enabled_validation_layers();
+    let extensions = required_instance_extensions();
+    let c_layers = layers.to_c_bytes();
+    let c_extensions = extensions.to_c_bytes();
+
+    debug!("");
+    debug!("Required Vulkan instance extensions:");
+    for ext in &extensions {
+        debug!("- {}", ext.to_string_lossy());
+    }
+
+    let mut missing_extensions = Vec::new();
+    for ext in &extensions {
+        if !available_extensions.contains(&ext.to_string_lossy().to_string()) {
+            let s = ext.to_string_lossy().to_string();
+            missing_extensions.push(s);
+        }
+    }
+
+    if !missing_extensions.is_empty() {
+        error!("Missing required Vulkan instance extensions:");
+        for ext in &missing_extensions {
+            error!("- {}", ext);
+        }
+        return Err(InstanceCreationError::MissingExtensions(missing_extensions));
+    }
+
+    let create_info = vk::InstanceCreateInfo {
+        p_application_info: &app_info,
+        enabled_layer_count: layers.len() as u32,
+        pp_enabled_layer_names: c_layers.as_ptr(),
+        enabled_extension_count: extensions.len() as u32,
+        pp_enabled_extension_names: c_extensions.as_ptr(),
+        ..Default::default()
+    };
+
+    let instance = unsafe { entry.create_instance(&create_info, None) }
+        .map_err(|_| InstanceCreationError::CreationFailed)?;
+
+    debug!("Vulkan instance created successfully.");
+
+    let mut i = Instance {
+        entry: ManuallyDrop::new(entry),
+        instance: ManuallyDrop::new(instance),
+        debug_messenger: None,
+    };
+
+    #[cfg(debug_assertions)]
+    {
+        if !i.make_debug_messenger() {
+            return Err(InstanceCreationError::FailedToCreateDebugMessenger);
+        }
+        debug!("Vulkan debug messenger created.");
+    }
+
+    Ok(i)
+}
+
+pub trait ToCByteVec {
+    fn to_c_bytes(&self) -> Vec<*const i8>;
+}
+
+pub trait ToCByteSlice<const N: usize> {
+    fn to_c_bytes(&self) -> [*const i8; N];
+}
+
+impl ToCByteVec for Vec<&'static CStr> {
+    fn to_c_bytes(&self) -> Vec<*const i8> {
+        self.iter().map(|s| s.as_ptr()).collect()
+    }
+}
+
+impl<const N: usize> ToCByteSlice<N> for [&'static CStr; N] {
+    fn to_c_bytes(&self) -> [*const i8; N] {
+        let mut array = [std::ptr::null(); N];
+        for (i, s) in self.iter().take(N).enumerate() {
+            array[i] = s.as_ptr();
+        }
+        array
+    }
+}
