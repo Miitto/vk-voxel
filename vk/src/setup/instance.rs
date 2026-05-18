@@ -1,3 +1,4 @@
+use crate::ToCBytes;
 use crate::core::Instance;
 use std::{ffi::CStr, mem::ManuallyDrop};
 use tracing::{debug, error};
@@ -82,8 +83,8 @@ impl crate::core::Instance {
 
         let layers = enabled_validation_layers();
         let extensions = required_instance_extensions();
-        let c_layers = layers.to_c_bytes();
-        let c_extensions = extensions.to_c_bytes();
+        let c_layers = layers.to_cbytes();
+        let c_extensions = extensions.to_cbytes();
 
         debug!("");
         debug!("Required Vulkan instance extensions:");
@@ -109,12 +110,10 @@ impl crate::core::Instance {
 
         let create_info = vk::InstanceCreateInfo {
             p_application_info: &app_info,
-            enabled_layer_count: layers.len() as u32,
-            pp_enabled_layer_names: c_layers.as_ptr(),
-            enabled_extension_count: extensions.len() as u32,
-            pp_enabled_extension_names: c_extensions.as_ptr(),
             ..Default::default()
-        };
+        }
+        .enabled_layer_names(c_layers.as_slice())
+        .enabled_extension_names(c_extensions.as_slice());
 
         let instance = unsafe { entry.create_instance(&create_info, None) }
             .map_err(|_| InstanceCreationError::CreationFailed)?;
@@ -173,31 +172,7 @@ impl crate::core::Surface {
             )
         }
         .map_err(SurfaceError::Creation)?;
-        let loader = ash::khr::surface::Instance::new(instance.as_ref(), &instance);
+        let loader = ash::khr::surface::Instance::new(instance.as_ref(), instance);
         Ok(Self { surface, loader })
-    }
-}
-
-pub trait ToCByteVec {
-    fn to_c_bytes(&self) -> Vec<*const i8>;
-}
-
-pub trait ToCByteSlice<const N: usize> {
-    fn to_c_bytes(&self) -> [*const i8; N];
-}
-
-impl ToCByteVec for Vec<&'static CStr> {
-    fn to_c_bytes(&self) -> Vec<*const i8> {
-        self.iter().map(|s| s.as_ptr()).collect()
-    }
-}
-
-impl<const N: usize> ToCByteSlice<N> for [&'static CStr; N] {
-    fn to_c_bytes(&self) -> [*const i8; N] {
-        let mut array = [std::ptr::null(); N];
-        for (i, s) in self.iter().take(N).enumerate() {
-            array[i] = s.as_ptr();
-        }
-        array
     }
 }

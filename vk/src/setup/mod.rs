@@ -11,6 +11,8 @@ mod swapchain;
 
 pub use instance::AppInfo;
 
+pub use swapchain::SwapchainCreationError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SetupError {
     #[error("Failed to create Vulkan instance: {0}")]
@@ -155,7 +157,7 @@ impl VkCore {
             device: ManuallyDrop::new(device),
             queues,
             allocator: ManuallyDrop::new(allocator),
-            swapchain: ManuallyDrop::new(swapchain),
+            swapchain,
             frame,
             transfer_pool,
         })

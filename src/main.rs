@@ -1,5 +1,5 @@
 use ::vk::prelude::*;
-use tracing::{error, info, log::LevelFilter};
+use tracing::{error, info, log::LevelFilter, warn};
 use winit::{
     event::WindowEvent,
     event_loop::ActiveEventLoop,
@@ -16,7 +16,9 @@ fn main() {
 
     let mut app_wrapper = AppWrapper::default();
 
-    event_loop.run_app(&mut app_wrapper);
+    if let Err(e) = event_loop.run_app(&mut app_wrapper) {
+        error!("Application error: {e}");
+    }
 }
 
 #[derive(Default)]
@@ -94,29 +96,16 @@ impl winit::application::ApplicationHandler for App {
                 info!("Keyboard input: {:?}", event.physical_key);
             }
             WindowEvent::RedrawRequested => {
-                let frame = &mut self.vkcore.frame[self.current_frame];
+                let frame = &self.vkcore.frame[self.current_frame];
                 unsafe {
                     self.vkcore
-                        .device
                         .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)
                 }
                 .expect("Failed to wait for in flight fence");
 
-                unsafe {
-                    self.vkcore
-                        .device
-                        .reset_command_pool(
-                            frame.pools.graphics.pool,
-                            vk::CommandPoolResetFlags::empty(),
-                        )
-                        .expect("Failed to reset graphics command pool");
-                    self.vkcore
-                        .device
-                        .reset_command_pool(
-                            frame.pools.compute.pool,
-                            vk::CommandPoolResetFlags::empty(),
-                        )
-                        .expect("Failed to reset compute command pool");
+                if let Err(e) = self.vkcore.reset_frame(self.current_frame) {
+                    error!("Failed to reset frame {}: {e}", self.current_frame);
+                    panic!("Failed to reset frame");
                 }
 
                 let now = std::time::Instant::now();
@@ -126,8 +115,7 @@ impl winit::application::ApplicationHandler for App {
 
                 let (image_index, _is_suboptimal) = match self
                     .vkcore
-                    .swapchain
-                    .next_image(&frame.image_available_semaphore)
+                    .aquire_next_image(&frame.image_available_semaphore)
                 {
                     Ok((idx, suboptimal)) => (idx, suboptimal),
                     Err(e) => {
@@ -144,12 +132,12 @@ impl winit::application::ApplicationHandler for App {
                         ..Default::default()
                     };
 
-                    unsafe { self.vkcore.device.allocate_command_buffers(&cmd_alloc_info) }
+                    unsafe { self.vkcore.allocate_command_buffers(&cmd_alloc_info) }
                         .expect("Failed to allocate command buffer")[0]
                 };
 
                 unsafe {
-                    self.vkcore.device.begin_command_buffer(
+                    self.vkcore.begin_command_buffer(
                         graphics_cmd,
                         &vk::CommandBufferBeginInfo::default()
                             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
@@ -173,7 +161,7 @@ impl winit::application::ApplicationHandler for App {
                             layer_count: 1,
                         });
                     unsafe {
-                        self.vkcore.device.cmd_pipeline_barrier2(
+                        self.vkcore.cmd_pipeline_barrier2(
                             graphics_cmd,
                             &vk::DependencyInfo::default()
                                 .image_memory_barriers(std::slice::from_ref(&b)),
@@ -181,7 +169,7 @@ impl winit::application::ApplicationHandler for App {
                     }
                 }
                 unsafe {
-                    self.vkcore.device.cmd_clear_color_image(
+                    self.vkcore.cmd_clear_color_image(
                         graphics_cmd,
                         self.vkcore.swapchain.images[image_index as usize],
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -215,7 +203,7 @@ impl winit::application::ApplicationHandler for App {
                         });
 
                     unsafe {
-                        self.vkcore.device.cmd_pipeline_barrier2(
+                        self.vkcore.cmd_pipeline_barrier2(
                             graphics_cmd,
                             &vk::DependencyInfo::default()
                                 .image_memory_barriers(std::slice::from_ref(&b)),
@@ -223,14 +211,13 @@ impl winit::application::ApplicationHandler for App {
                     }
                 }
 
-                if let Err(e) = unsafe { self.vkcore.device.end_command_buffer(graphics_cmd) } {
+                if let Err(e) = unsafe { self.vkcore.end_command_buffer(graphics_cmd) } {
                     error!("Failed to end command buffer: {e}");
                     panic!("Failed to end command buffer");
                 }
 
                 unsafe {
                     self.vkcore
-                        .device
                         .reset_fences(&[frame.in_flight_fence])
                         .expect("Failed to reset in flight fence")
                 };
@@ -243,7 +230,7 @@ impl winit::application::ApplicationHandler for App {
                 let signal_info = vk::SemaphoreSubmitInfo::default().semaphore(render_sem);
 
                 if let Err(e) = unsafe {
-                    self.vkcore.device.queue_submit2(
+                    self.vkcore.queue_submit2(
                         self.vkcore.queues.present.queue,
                         &[vk::SubmitInfo2::default()
                             .wait_semaphore_infos(std::slice::from_ref(&wait_info))
@@ -256,7 +243,7 @@ impl winit::application::ApplicationHandler for App {
                     panic!("Failed to submit command buffer");
                 }
 
-                if let Err(e) = unsafe {
+                match unsafe {
                     self.vkcore.swapchain.queue_present(
                         self.vkcore.queues.present.queue,
                         &vk::PresentInfoKHR::default()
@@ -265,9 +252,34 @@ impl winit::application::ApplicationHandler for App {
                             .swapchains(std::slice::from_ref(&self.vkcore.swapchain.swapchain)),
                     )
                 } {
-                    error!("Failed to present swapchain image: {e}");
-                    panic!("Failed to present swapchain image");
+                    Ok(subopt) => {
+                        if subopt || _is_suboptimal {
+                            warn!(
+                                "Swapchain is suboptimal after presentation. Consider recreating the swapchain."
+                            );
+                            if let Err(e) = self.vkcore.remake_swapchain() {
+                                error!("Failed to remake swapchain: {e}");
+                                panic!("Failed to remake swapchain");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                            warn!(
+                                "Swapchain is out of date after presentation. Recreating swapchain."
+                            );
+                            if let Err(e) = self.vkcore.remake_swapchain() {
+                                error!("Failed to remake swapchain: {e}");
+                                panic!("Failed to remake swapchain");
+                            }
+                        } else {
+                            error!("Failed to present swapchain image: {e}");
+                            panic!("Failed to present swapchain image");
+                        }
+                    }
                 }
+
+                self.current_frame = (self.current_frame + 1) % ::vk::FRAMES_IN_FLIGHT;
             }
             _ => {}
         }

@@ -25,11 +25,6 @@ impl Swapchain {
         surface: &Surface,
         device: &crate::core::Device,
     ) -> Result<Swapchain, SwapchainCreationError> {
-        let caps = unsafe {
-            surface.get_physical_device_surface_capabilities(device.physical.dev, surface.surface)
-        }
-        .map_err(SwapchainCreationError::SurfaceCapabilities)?;
-
         let formats = unsafe {
             surface.get_physical_device_surface_formats(device.physical.dev, surface.surface)
         }
@@ -53,22 +48,61 @@ impl Swapchain {
             .find(|&m| *m == vk::PresentModeKHR::MAILBOX)
             .unwrap_or(&vk::PresentModeKHR::FIFO);
 
-        let create_info = vk::SwapchainCreateInfoKHR {
+        let loader = ash::khr::swapchain::Device::new(instance, device);
+
+        let info = crate::core::SwapchainInfo {
+            format: surface_format.format,
+            color_space: surface_format.color_space,
+            extent: vk::Extent2D {
+                width: 800,
+                height: 600,
+            },
+            present_mode: *present_mode,
+        };
+
+        Self::make(surface, device, loader, info, None)
+    }
+
+    fn make(
+        surface: &Surface,
+        device: &crate::core::Device,
+        loader: ash::khr::swapchain::Device,
+        mut info: crate::core::SwapchainInfo,
+        old: Option<vk::SwapchainKHR>,
+    ) -> Result<Swapchain, SwapchainCreationError> {
+        let caps = unsafe {
+            surface.get_physical_device_surface_capabilities(device.physical.dev, surface.surface)
+        }
+        .map_err(SwapchainCreationError::SurfaceCapabilities)?;
+
+        info.extent.width = info
+            .extent
+            .width
+            .clamp(caps.min_image_extent.width, caps.max_image_extent.width);
+        info.extent.height = info
+            .extent
+            .height
+            .clamp(caps.min_image_extent.height, caps.max_image_extent.height);
+
+        let mut create_info = vk::SwapchainCreateInfoKHR {
             surface: surface.surface,
             min_image_count: 3.max(caps.min_image_count).min(caps.max_image_count),
-            image_format: surface_format.format,
-            image_color_space: surface_format.color_space,
-            image_extent: caps.current_extent,
+            image_format: info.format,
+            image_color_space: info.color_space,
+            image_extent: info.extent,
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: caps.current_transform,
             composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-            present_mode: *present_mode,
+            present_mode: info.present_mode,
             ..Default::default()
         };
 
-        let loader = ash::khr::swapchain::Device::new(&instance, &device);
+        if let Some(old) = old {
+            create_info.old_swapchain = old;
+        }
+
         let swapchain = unsafe { loader.create_swapchain(&create_info, None) }
             .map_err(SwapchainCreationError::Creation)?;
 
@@ -78,7 +112,7 @@ impl Swapchain {
 
         let mut view_create = vk::ImageViewCreateInfo::default()
             .view_type(vk::ImageViewType::TYPE_2D)
-            .format(surface_format.format)
+            .format(info.format)
             .components(vk::ComponentMapping {
                 r: vk::ComponentSwizzle::IDENTITY,
                 g: vk::ComponentSwizzle::IDENTITY,
@@ -94,7 +128,7 @@ impl Swapchain {
             });
 
         let mut sems = Vec::with_capacity(images.len());
-        let mut sem_create_info = vk::SemaphoreCreateInfo::default();
+        let sem_create_info = vk::SemaphoreCreateInfo::default();
 
         for image in &images {
             view_create.image = *image;
@@ -114,11 +148,23 @@ impl Swapchain {
             views,
             sems,
             loader,
-            info: crate::core::SwapchainInfo {
-                format: surface_format.format,
-                extent: caps.current_extent,
-                present_mode: *present_mode,
-            },
+            info,
         })
+    }
+
+    pub fn remake(
+        &self,
+        surface: &Surface,
+        device: &crate::core::Device,
+    ) -> Result<Self, SwapchainCreationError> {
+        let new = Self::make(
+            surface,
+            device,
+            self.loader.clone(),
+            self.info,
+            Some(self.swapchain),
+        )?;
+        _ = unsafe { device.device_wait_idle() };
+        Ok(new)
     }
 }

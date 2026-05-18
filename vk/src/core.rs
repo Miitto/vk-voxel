@@ -9,7 +9,7 @@ pub struct VkCore {
     pub device: ManuallyDrop<Device>,
     pub queues: Queues,
     pub allocator: ManuallyDrop<vk_mem::Allocator>,
-    pub swapchain: ManuallyDrop<Swapchain>,
+    pub swapchain: Swapchain,
     pub frame: [Frame; crate::FRAMES_IN_FLIGHT],
     pub transfer_pool: CommandPool,
 }
@@ -59,10 +59,12 @@ pub struct Queues {
     pub transfer: Queue,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SwapchainInfo {
     pub format: vk::Format,
     pub extent: vk::Extent2D,
     pub present_mode: vk::PresentModeKHR,
+    pub color_space: vk::ColorSpaceKHR,
 }
 
 pub struct Swapchain {
@@ -202,13 +204,7 @@ impl Drop for VkCore {
                 frame.destroy(&self.device);
             }
 
-            for sem in &self.swapchain.sems {
-                self.device.destroy_semaphore(*sem, None);
-            }
-            for view in &self.swapchain.views {
-                self.device.destroy_image_view(*view, None);
-            }
-            ManuallyDrop::drop(&mut self.swapchain);
+            self.swapchain.destroy(&self.device);
 
             ManuallyDrop::drop(&mut self.allocator);
 
@@ -251,9 +247,15 @@ impl Drop for Device {
     }
 }
 
-impl Drop for Swapchain {
-    fn drop(&mut self) {
+impl Swapchain {
+    pub fn destroy(&mut self, device: &ash::Device) {
         unsafe {
+            for sem in &self.sems {
+                device.destroy_semaphore(*sem, None);
+            }
+            for view in &self.views {
+                device.destroy_image_view(*view, None);
+            }
             self.loader.destroy_swapchain(self.swapchain, None);
         }
     }
@@ -268,5 +270,46 @@ impl Frame {
             device.destroy_fence(self.in_flight_fence, None);
             device.destroy_semaphore(self.image_available_semaphore, None);
         }
+    }
+}
+
+impl std::ops::Deref for VkCore {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.device.logical
+    }
+}
+
+impl VkCore {
+    pub fn aquire_next_image(
+        &self,
+        signal_semaphore: &vk::Semaphore,
+    ) -> Result<(u32, bool), vk::Result> {
+        self.swapchain.next_image(signal_semaphore)
+    }
+
+    pub fn reset_frame(&self, idx: usize) -> ash::prelude::VkResult<()> {
+        unsafe {
+            self.device.reset_command_pool(
+                self.frame[idx].pools.graphics.pool,
+                vk::CommandPoolResetFlags::empty(),
+            )?;
+            self.device.reset_command_pool(
+                self.frame[idx].pools.compute.pool,
+                vk::CommandPoolResetFlags::empty(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn remake_swapchain(&mut self) -> Result<(), crate::setup::SwapchainCreationError> {
+        let new_swapchain = self.swapchain.remake(&self.surface, &self.device)?;
+        _ = unsafe { self.device.device_wait_idle() };
+        self.swapchain.destroy(&self.device);
+
+        self.swapchain = new_swapchain;
+
+        Ok(())
     }
 }
