@@ -1,4 +1,5 @@
 use ash::vk;
+use tracing::debug;
 
 use crate::core::{Queue, Queues};
 
@@ -98,6 +99,22 @@ impl crate::core::Queues {
         }
         if transfer.is_none() {
             transfer = compute;
+        }
+
+        if found_combined_graphics_present {
+            debug!(
+                "Found combined graphics and present queue family: {}",
+                graphics.unwrap()
+            );
+        }
+        if found_dedicated_compute {
+            debug!("Found dedicated compute queue family: {}", compute.unwrap());
+        }
+        if found_dedicated_transfer {
+            debug!(
+                "Found dedicated transfer queue family: {}",
+                transfer.unwrap()
+            );
         }
 
         Ok(QueueFamilies {

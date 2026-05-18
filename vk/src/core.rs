@@ -9,6 +9,13 @@ pub struct VkCore {
     pub device: ManuallyDrop<Device>,
     pub queues: Queues,
     pub swapchain: ManuallyDrop<Swapchain>,
+    pub frame: [Frame; crate::FRAMES_IN_FLIGHT],
+    pub transfer_pool: CommandPool,
+}
+
+#[derive(Debug, Default)]
+pub struct Frame {
+    pub pools: Pools,
 }
 
 pub struct Instance {
@@ -36,7 +43,7 @@ pub struct Device {
     pub logical: ash::Device,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Queue {
     pub family: u32,
     pub queue: vk::Queue,
@@ -62,6 +69,18 @@ pub struct Swapchain {
     pub sems: Vec<vk::Semaphore>,
     pub info: SwapchainInfo,
     pub loader: ash::khr::swapchain::Device,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandPool {
+    pub pool: ash::vk::CommandPool,
+    pub queue: Queue,
+}
+
+#[derive(Debug, Default)]
+pub struct Pools {
+    pub graphics: CommandPool,
+    pub compute: CommandPool,
 }
 
 mod instance_surface_impls {
@@ -149,6 +168,16 @@ impl std::ops::Deref for Swapchain {
 impl Drop for VkCore {
     fn drop(&mut self) {
         unsafe {
+            let compute_is_graphics = self.queues.compute.family == self.queues.graphics.family;
+            for frame in &self.frame {
+                self.device
+                    .destroy_command_pool(frame.pools.graphics.pool, None);
+                if !compute_is_graphics {
+                    self.device
+                        .destroy_command_pool(frame.pools.compute.pool, None);
+                }
+            }
+
             for sem in &self.swapchain.sems {
                 self.device.destroy_semaphore(*sem, None);
             }

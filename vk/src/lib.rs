@@ -6,6 +6,8 @@ mod validation;
 
 pub use setup::AppInfo;
 
+pub const FRAMES_IN_FLIGHT: usize = 2;
+
 pub fn init(
     app_info: AppInfo,
     window: &winit::window::Window,
