@@ -6,6 +6,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
+shader::shaders!("shaders", debug, none, "basic.slang");
+
 fn main() {
     env_logger::builder()
         .filter_level(LevelFilter::Trace)
