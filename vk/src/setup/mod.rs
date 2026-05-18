@@ -1,4 +1,4 @@
-use crate::core::VkCore;
+use crate::core::{Device, Instance, Queues, Surface, Swapchain, VkCore};
 use ash::vk;
 use std::mem::ManuallyDrop;
 use tracing::debug;
@@ -6,6 +6,7 @@ use tracing::debug;
 mod device;
 mod instance;
 mod queues;
+mod swapchain;
 
 pub use instance::AppInfo;
 
@@ -13,22 +14,35 @@ pub use instance::AppInfo;
 pub enum SetupError {
     #[error("Failed to create Vulkan instance: {0}")]
     InstanceCreation(#[from] instance::InstanceCreationError),
+    #[error("Failed to create Vulkan surface: {0}")]
+    SurfaceCreation(#[from] instance::SurfaceError),
     #[error("Failed to select Vulkan physical devices: {0}")]
     DeviceScore(#[from] device::DeviceSelectError),
     #[error("Failed to get Vulkan queue families: {0}")]
     QueueFamily(#[from] queues::QueueFamilyError),
     #[error("Failed to create Vulkan logical device: {0}")]
     LogicalDeviceCreation(#[from] device::DeviceCreationError),
+    #[error("Failed to create Vulkan swapchain: {0}")]
+    SwapchainCreation(#[from] swapchain::SwapchainCreationError),
 }
 
 impl VkCore {
-    pub fn new(app_info: AppInfo) -> Result<VkCore, SetupError> {
-        let instance = instance::create_instance(app_info)?;
+    pub fn new(app_info: AppInfo, window: &winit::window::Window) -> Result<VkCore, SetupError> {
+        let instance = Instance::new(app_info)?;
 
-        let phys_devices = device::select_device(
-            &instance.instance,
+        let surface = Surface::new(&instance, window)?;
+
+        let required_device_exts = vec![
+            ash::khr::swapchain::NAME
+                .to_str()
+                .expect("Invalid Ext Name")
+                .to_string(),
+        ];
+
+        let phys_devices = Device::select(
+            &instance,
             device::DeviceSelectInfo {
-                required_extensions: vec!["VK_KHR_swapchain".to_string()],
+                required_extensions: &required_device_exts,
                 score_fn: |info| {
                     let mut score = 0;
 
@@ -49,7 +63,7 @@ impl VkCore {
             .next()
             .expect("No phsical devices without error?");
 
-        let queue_fams = queues::get_queue_families(&instance.instance, phys_device.dev)?;
+        let queue_fams = Queues::find_families(&instance, &surface, phys_device.dev)?;
         debug!("");
         debug!("Selected Physical Device Queue Families:");
         debug!("- Graphics: {}", queue_fams.graphics);
@@ -57,15 +71,19 @@ impl VkCore {
         debug!("- Compute: {}", queue_fams.compute);
         debug!("- Transfer: {}", queue_fams.transfer);
 
-        let device = device::create_device(&instance.instance, phys_device, &queue_fams)?;
+        let device = Device::new(&instance, phys_device, &queue_fams, &required_device_exts)?;
 
-        let queues = queues::get_queues(&device.logical, queue_fams);
+        let queues = Queues::retrieve(&device, queue_fams);
+
+        let swapchain = Swapchain::new(&instance, &surface, &device)?;
 
         debug!("Created Vulkan Core.");
         Ok(VkCore {
             instance: ManuallyDrop::new(instance),
+            surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
             queues,
+            swapchain: ManuallyDrop::new(swapchain),
         })
     }
 }

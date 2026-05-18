@@ -10,8 +10,10 @@ members = ["math", "vk"]
 thiserror = "2.0.18"
 tracing = { version = "0.1.44", features = ["log"] }
 math = { path = "./math" }
+winit = "0.30.13"
 
 [dependencies]
 vk = { path = "./vk" }
 tracing.workspace = true
 env_logger = "0.11.10"
+winit.workspace = true

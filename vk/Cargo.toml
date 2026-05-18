@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 ash = "0.38.0"
+ash-window = "0.13.0"
 tracing.workspace = true
 thiserror.workspace = true
+winit.workspace = true
