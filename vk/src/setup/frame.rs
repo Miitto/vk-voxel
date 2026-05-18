@@ -5,6 +5,10 @@ use ash::vk;
 pub enum FrameResourceCreationError {
     #[error("Failed to create command pool: {0}")]
     CommandPoolCreation(#[source] vk::Result),
+    #[error("Failed to create in flight fence: {0}")]
+    FenceCreation(#[source] vk::Result),
+    #[error("Failed to create image available semaphore: {0}")]
+    SemaphoreCreateInfo(#[source] vk::Result),
 }
 
 impl Frame {
@@ -25,7 +29,7 @@ impl Frame {
                 queue: queues.graphics,
             };
 
-            let compute = if queues.graphics.family != queues.compute.family {
+            let compute = {
                 let compute_pool_info = vk::CommandPoolCreateInfo {
                     queue_family_index: queues.compute.family,
                     flags: vk::CommandPoolCreateFlags::TRANSIENT,
@@ -37,13 +41,30 @@ impl Frame {
                         .map_err(FrameResourceCreationError::CommandPoolCreation)?,
                     queue: queues.compute,
                 }
-            } else {
-                graphics
             };
 
             crate::core::Pools { graphics, compute }
         };
 
-        Ok(Frame { pools })
+        let in_flight_fence = {
+            let create_info = vk::FenceCreateInfo {
+                flags: vk::FenceCreateFlags::SIGNALED,
+                ..Default::default()
+            };
+            unsafe { device.create_fence(&create_info, None) }
+                .map_err(FrameResourceCreationError::FenceCreation)?
+        };
+
+        let image_available_semaphore = {
+            let create_info = vk::SemaphoreCreateInfo::default();
+            unsafe { device.create_semaphore(&create_info, None) }
+                .map_err(FrameResourceCreationError::SemaphoreCreateInfo)?
+        };
+
+        Ok(Frame {
+            pools,
+            in_flight_fence,
+            image_available_semaphore,
+        })
     }
 }

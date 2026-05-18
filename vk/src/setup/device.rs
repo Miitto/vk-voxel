@@ -105,6 +105,7 @@ impl crate::core::Device {
         instance: &ash::Instance,
         phys_device: DeviceInfo,
         queue_fams: &crate::setup::queues::QueueFamilies,
+        mut features: vk::PhysicalDeviceFeatures2,
         required_extensions: &[String],
     ) -> Result<crate::core::Device, DeviceCreationError> {
         let queue_priorities = [1.0_f32];
@@ -136,6 +137,7 @@ impl crate::core::Device {
             .collect();
 
         let device_create_info = vk::DeviceCreateInfo::default()
+            .push_next(&mut features)
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_ext_ptrs);
 

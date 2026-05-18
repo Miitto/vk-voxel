@@ -8,6 +8,10 @@ pub use setup::AppInfo;
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
+pub mod prelude {
+    pub use ash::vk;
+}
+
 pub fn init(
     app_info: AppInfo,
     window: &winit::window::Window,

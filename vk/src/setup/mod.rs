@@ -23,6 +23,8 @@ pub enum SetupError {
     QueueFamily(#[from] queues::QueueFamilyError),
     #[error("Failed to create Vulkan logical device: {0}")]
     LogicalDeviceCreation(#[from] device::DeviceCreationError),
+    #[error("Failed to create Vulkan memory allocator: {0}")]
+    AllocatorCreation(#[source] vk::Result),
     #[error("Failed to create Vulkan swapchain: {0}")]
     SwapchainCreation(#[from] swapchain::SwapchainCreationError),
     #[error("Failed to create frame resources: {0}")]
@@ -74,9 +76,43 @@ impl VkCore {
         debug!("- Compute: {}", queue_fams.compute);
         debug!("- Transfer: {}", queue_fams.transfer);
 
-        let device = Device::new(&instance, phys_device, &queue_fams, &required_device_exts)?;
+        let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .synchronization2(true);
+        let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
+            .buffer_device_address(true)
+            .descriptor_indexing(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_storage_image_update_after_bind(true)
+            .descriptor_binding_uniform_buffer_update_after_bind(true)
+            .descriptor_binding_storage_buffer_update_after_bind(true);
+        let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
+        let features = vk::PhysicalDeviceFeatures2::default()
+            .features(vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true))
+            .push_next(&mut features11)
+            .push_next(&mut features12)
+            .push_next(&mut features13);
+        let device = Device::new(
+            &instance,
+            phys_device,
+            &queue_fams,
+            features,
+            &required_device_exts,
+        )?;
 
         let queues = Queues::retrieve(&device, queue_fams);
+
+        let allocator = {
+            let mut create_info =
+                vk_mem::AllocatorCreateInfo::new(&instance, &device, device.physical.dev);
+            create_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
+            create_info.vulkan_api_version = vk::make_api_version(0, 1, 3, 0);
+            unsafe { vk_mem::Allocator::new(create_info) }
+        }
+        .map_err(SetupError::AllocatorCreation)?;
 
         let swapchain = Swapchain::new(&instance, &surface, &device)?;
 
@@ -118,6 +154,7 @@ impl VkCore {
             surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
             queues,
+            allocator: ManuallyDrop::new(allocator),
             swapchain: ManuallyDrop::new(swapchain),
             frame,
             transfer_pool,

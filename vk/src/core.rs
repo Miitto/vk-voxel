@@ -1,5 +1,5 @@
 use std::mem::ManuallyDrop;
-use tracing::debug;
+use tracing::{debug, error};
 
 use ash::vk;
 
@@ -8,6 +8,7 @@ pub struct VkCore {
     pub surface: ManuallyDrop<Surface>,
     pub device: ManuallyDrop<Device>,
     pub queues: Queues,
+    pub allocator: ManuallyDrop<vk_mem::Allocator>,
     pub swapchain: ManuallyDrop<Swapchain>,
     pub frame: [Frame; crate::FRAMES_IN_FLIGHT],
     pub transfer_pool: CommandPool,
@@ -16,6 +17,8 @@ pub struct VkCore {
 #[derive(Debug, Default)]
 pub struct Frame {
     pub pools: Pools,
+    pub in_flight_fence: vk::Fence,
+    pub image_available_semaphore: vk::Semaphore,
 }
 
 pub struct Instance {
@@ -66,6 +69,7 @@ pub struct Swapchain {
     pub swapchain: ash::vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub views: Vec<vk::ImageView>,
+    /// Per swapchain image "render finished" semaphores.
     pub sems: Vec<vk::Semaphore>,
     pub info: SwapchainInfo,
     pub loader: ash::khr::swapchain::Device,
@@ -157,25 +161,45 @@ mod device_queue_impls {
     }
 }
 
-impl std::ops::Deref for Swapchain {
-    type Target = ash::khr::swapchain::Device;
+mod swapchain_impls {
+    use super::*;
+    impl std::ops::Deref for Swapchain {
+        type Target = ash::khr::swapchain::Device;
 
-    fn deref(&self) -> &Self::Target {
-        &self.loader
+        fn deref(&self) -> &Self::Target {
+            &self.loader
+        }
+    }
+
+    impl Swapchain {
+        /// On success, returns the next image index and whether the swapchain is suboptimal.
+        pub fn next_image(
+            &self,
+            signal_semaphore: &vk::Semaphore,
+        ) -> Result<(u32, bool), vk::Result> {
+            unsafe {
+                self.loader.acquire_next_image(
+                    self.swapchain,
+                    u64::MAX,
+                    *signal_semaphore,
+                    vk::Fence::null(),
+                )
+            }
+        }
     }
 }
 
 impl Drop for VkCore {
     fn drop(&mut self) {
         unsafe {
-            let compute_is_graphics = self.queues.compute.family == self.queues.graphics.family;
-            for frame in &self.frame {
-                self.device
-                    .destroy_command_pool(frame.pools.graphics.pool, None);
-                if !compute_is_graphics {
-                    self.device
-                        .destroy_command_pool(frame.pools.compute.pool, None);
-                }
+            if let Err(e) = self.device.device_wait_idle() {
+                error!("Failed to wait for device idle during VkCore drop: {e}");
+            }
+
+            self.device
+                .destroy_command_pool(self.transfer_pool.pool, None);
+            for frame in &mut self.frame {
+                frame.destroy(&self.device);
             }
 
             for sem in &self.swapchain.sems {
@@ -185,6 +209,8 @@ impl Drop for VkCore {
                 self.device.destroy_image_view(*view, None);
             }
             ManuallyDrop::drop(&mut self.swapchain);
+
+            ManuallyDrop::drop(&mut self.allocator);
 
             ManuallyDrop::drop(&mut self.surface);
             ManuallyDrop::drop(&mut self.device);
@@ -229,6 +255,18 @@ impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
             self.loader.destroy_swapchain(self.swapchain, None);
+        }
+    }
+}
+
+impl Frame {
+    pub(super) fn destroy(&mut self, device: &ash::Device) {
+        unsafe {
+            device.destroy_command_pool(self.pools.graphics.pool, None);
+            device.destroy_command_pool(self.pools.compute.pool, None);
+
+            device.destroy_fence(self.in_flight_fence, None);
+            device.destroy_semaphore(self.image_available_semaphore, None);
         }
     }
 }
